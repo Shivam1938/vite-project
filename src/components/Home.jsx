@@ -106,24 +106,34 @@ function Home() {
       setIsLoading(true)
       setProgress(10)
       
-      // Create FormData object to send the image to the API
-      const formData = new FormData()
-      formData.append('image', image)
+      // Convert File to base64
+      const base64Image = await convertToBase64(image)
+      setProgress(20)
+      
+      // Create request data with base64 image
+      const requestData = {
+        url: base64Image,
+        width: "200%",  // Upscale by 2x
+        height: "200%", // Upscale by 2x
+        enhancements: ["denoise", "deblur", "face_enhance", "light", "color"],
+        output_format: "jpeg",
+        quality: 90
+      }
       
       // Update progress to indicate API call is starting
       setProgress(30)
       
-      // Define API endpoint - replace with your actual deep image enhancement API
-      const apiUrl = 'https://api.deepai.org/api/torch-srgan'
+      // Define Deep Image API endpoint
+      const apiUrl = 'https://deep-image.ai/rest_api/process'
       
       // Make API request
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
-          // Use environment variable for API key with correct header name
-          'X-API-KEY': import.meta.env.VITE_API_KEY
+          'X-API-KEY': import.meta.env.VITE_API_KEY,
+          'Content-Type': 'application/json'
         },
-        body: formData
+        body: JSON.stringify(requestData)
       })
       
       // Update progress
@@ -140,21 +150,84 @@ function Home() {
       // Update progress
       setProgress(80)
       
-      // Check if API returned an enhanced image URL
-      if (!data.output_url) {
-        throw new Error('API did not return an enhanced image')
+      // Check if API returned a valid response
+      if (data.status === 'complete' && data.result_url) {
+        // Set the enhanced image URL from the API response
+        setEnhancedImage(data.result_url)
+        setProgress(100)
+        setIsLoading(false)
+      } else if (data.job) {
+        // If the job is still processing, poll for the result
+        await pollForResult(data.job)
+      } else {
+        throw new Error('API did not return a valid response')
       }
-      
-      // Set the enhanced image URL from the API response
-      setEnhancedImage(data.output_url)
-      
-      // Complete progress
-      setProgress(100)
-      setIsLoading(false)
       
     } catch (err) {
       console.error('Enhancement error:', err)
       setError(`Failed to enhance image: ${err.message}`)
+      setIsLoading(false)
+    }
+  }
+  
+  // Convert file to base64
+  const convertToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.readAsDataURL(file)
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = error => reject(error)
+    })
+  }
+
+  // Function to poll for results if processing takes more than 25 seconds
+  const pollForResult = async (jobId) => {
+    try {
+      // Set polling interval (3 seconds)
+      const pollInterval = 3000
+      let attempts = 0
+      const maxAttempts = 20 // Maximum number of attempts (60 seconds total)
+      
+      const checkResult = async () => {
+        attempts++
+        setProgress(80 + Math.min(15, attempts))
+        
+        // Make request to get job result
+        const response = await fetch(`https://deep-image.ai/rest_api/result/${jobId}`, {
+          method: 'GET',
+          headers: {
+            'X-API-KEY': import.meta.env.VITE_API_KEY
+          }
+        })
+        
+        if (!response.ok) {
+          throw new Error(`Failed to get job result: ${response.status} ${response.statusText}`)
+        }
+        
+        const resultData = await response.json()
+        
+        if (resultData.status === 'complete' && resultData.result_url) {
+          // Job is complete, set the enhanced image URL
+          setEnhancedImage(resultData.result_url)
+          setProgress(100)
+          setIsLoading(false)
+          return true
+        } else if (attempts >= maxAttempts) {
+          // Maximum attempts reached
+          throw new Error('Processing timed out after 60 seconds')
+        } else {
+          // Job is still processing, continue polling
+          setTimeout(checkResult, pollInterval)
+          return false
+        }
+      }
+      
+      // Start polling
+      await checkResult()
+      
+    } catch (err) {
+      console.error('Polling error:', err)
+      setError(`Failed while waiting for processing: ${err.message}`)
       setIsLoading(false)
     }
   }
